@@ -1585,30 +1585,57 @@ static void find_suppliers(struct kmod_ctx *ctx)
 
         for (FTSENT *ftsent = fts_read(fts); ftsent != NULL; ftsent = fts_read(fts)) {
                 if (strcmp(ftsent->fts_name, "modalias") == 0) {
-                        _cleanup_kmod_module_unref_list_ struct kmod_list *list = NULL;
-                        struct kmod_list *l;
-
-                        if (find_kmod_module_from_sysfs_node(ctx, ftsent->fts_parent->fts_path, ftsent->fts_parent->fts_pathlen, &list) < 0)
-                                continue;
-
-                        kmod_list_foreach(l, list) {
-                                _cleanup_kmod_module_unref_ struct kmod_module *mod = kmod_module_get_module(l);
-                                const char *name = kmod_module_get_name(mod);
-                                Hashmap *suppliers = hashmap_get(modules_suppliers, name);
-                                if (suppliers == NULL) {
-                                        suppliers = hashmap_new(string_hash_func, string_compare_func);
-                                        hashmap_put(modules_suppliers, strdup(name), suppliers);
-                                }
-
-                                find_suppliers_for_sys_node(ctx, suppliers, ftsent->fts_parent->fts_path, ftsent->fts_parent->fts_pathlen);
+                        Hashmap *suppliers = hashmap_get(modules_suppliers, ftsent->fts_parent->fts_path);
+                        if (suppliers == NULL) {
+                                char *supp = strndup(ftsent->fts_parent->fts_path, ftsent->fts_parent->fts_pathlen);
+                                suppliers = hashmap_new(string_hash_func, string_compare_func);
+                                hashmap_put(modules_suppliers, supp, suppliers);
                         }
+
+                        find_suppliers_for_sys_node(ctx, suppliers, ftsent->fts_parent->fts_path, ftsent->fts_parent->fts_pathlen);
                 }
         }
 }
 
 static Hashmap *find_suppliers_paths_for_module(const char *module)
 {
-        return hashmap_get(modules_suppliers, module);
+        log_error("find_suppliers_paths_for_module: called for %s", module);
+
+        char drivers_path[PATH_MAX], dev_path[PATH_MAX];
+        Hashmap *suppliers = hashmap_new(string_hash_func, string_compare_func);
+        hashmap_put(modules_suppliers, strdup(module), suppliers);
+
+        if (snprintf(drivers_path, sizeof(drivers_path), "/sys/module/%s/drivers", module) >= sizeof(drivers_path))
+                return suppliers;
+
+        _cleanup_fts_close_ FTS *fts;
+        char *paths[] = { drivers_path, NULL };
+        fts = fts_open(paths, FTS_NOSTAT | FTS_LOGICAL, NULL);
+        for (FTSENT *ftsent = fts_read(fts); ftsent != NULL; ftsent = fts_read(fts)) {
+                if (ftsent->fts_level < 2) {
+                        if (ftsent->fts_info == FTS_SL)
+                                fts_set(fts, ftsent, FTS_FOLLOW);
+                        continue;
+                }
+
+                if (ftsent->fts_level > 2 || ftsent->fts_info == FTS_F || !strcmp(ftsent->fts_name, "module")) {
+                        fts_set(fts, ftsent, FTS_SKIP);
+                        continue;
+                }
+
+                if (realpath(ftsent->fts_path, dev_path) == NULL)
+                        continue;
+
+                Hashmap *sys_suppliers = hashmap_get(modules_suppliers, dev_path);
+                char *supp;
+                Iterator i;
+                HASHMAP_FOREACH(supp, sys_suppliers, i) {
+                        supp = strdup(supp);
+                        hashmap_put(suppliers, supp, supp);
+                }
+        }
+
+        return suppliers;
 }
 
 static int install_dependent_module(struct kmod_ctx *ctx, struct kmod_module *mod, Hashmap *suppliers_paths, int *err)
