@@ -1511,10 +1511,12 @@ static int find_kmod_module_from_sysfs_node(struct kmod_ctx *ctx, const char *sy
                                             struct kmod_list **modules)
 {
         char modalias_path[PATH_MAX];
+        log_error("k_from_sysfs_n:  sysdir = %s", sysfs_node);
         if (snprintf(modalias_path, sizeof(modalias_path), "%.*s/modalias", sysfs_node_len,
                      sysfs_node) >= sizeof(modalias_path))
                 return -1;
 
+        log_error("k_from_sysfs_n:  modalias_path = %s", modalias_path);
         _cleanup_close_ int modalias_file = -1;
         if ((modalias_file = open(modalias_path, O_RDONLY | O_CLOEXEC)) == -1)
                 return 0;
@@ -1530,11 +1532,13 @@ static int find_modules_from_sysfs_node(struct kmod_ctx *ctx, const char *sysfs_
 {
         _cleanup_kmod_module_unref_list_ struct kmod_list *list = NULL;
         struct kmod_list *l = NULL;
+        log_error("m_from_sysfs_n:  sysdir = %s", sysfs_node);
 
         if (find_kmod_module_from_sysfs_node(ctx, sysfs_node, strlen(sysfs_node), &list) >= 0) {
                 kmod_list_foreach(l, list) {
                         struct kmod_module *mod = kmod_module_get_module(l);
                         char *module = strdup(kmod_module_get_name(mod));
+                        log_error("m_from_sysfs_n:    module = %s", module);
                         kmod_module_unref(mod);
 
                         if (hashmap_put(modules, module, module) < 0)
@@ -1551,12 +1555,14 @@ static void find_suppliers_for_sys_node(struct kmod_ctx *ctx, Hashmap *suppliers
         char node_path[PATH_MAX];
         char real_path[PATH_MAX];
 
+        log_error("s_for_sys_node:     sysdir_raw = %s", node_path_raw);
         memcpy(node_path, node_path_raw, node_path_len);
         node_path[node_path_len] = '\0';
 
         DIR *d;
         struct dirent *dir;
-        while (realpath(node_path, real_path) != NULL && strcmp(real_path, "/sys/devices")) {
+        while (realpath(node_path, real_path) != NULL && strcmp(real_path, "/sys")) {
+                log_error("s_for_sys_node:     sysdir = %s", real_path);
                 d = opendir(node_path);
                 if (d) {
                         size_t real_path_len = strlen(real_path);
@@ -1565,9 +1571,11 @@ static void find_suppliers_for_sys_node(struct kmod_ctx *ctx, Hashmap *suppliers
                                         if (snprintf(real_path + real_path_len, sizeof(real_path) - real_path_len, "/%s/supplier",
                                                      dir->d_name) < sizeof(real_path) - real_path_len) {
                                                 char *real_supplier_path = realpath(real_path, NULL);
-                                                if (real_supplier_path != NULL)
+                                                if (real_supplier_path != NULL) {
+                                                        log_error("s_for_sys_node:       supplier = %s", real_supplier_path);
                                                         if (hashmap_put(suppliers, real_supplier_path, real_supplier_path) < 0)
                                                                 free(real_supplier_path);
+                                                }
                                         }
                                 }
                         }
@@ -1580,28 +1588,38 @@ static void find_suppliers_for_sys_node(struct kmod_ctx *ctx, Hashmap *suppliers
 static void find_suppliers(struct kmod_ctx *ctx)
 {
         _cleanup_fts_close_ FTS *fts;
-        char *paths[] = { "/sys/devices/platform", NULL };
+        char *paths[] = { "/sys/class/devlink", NULL };
+        char consumer[PATH_MAX];
+        size_t consumer_len;
         fts = fts_open(paths, FTS_NOSTAT | FTS_PHYSICAL, NULL);
 
         for (FTSENT *ftsent = fts_read(fts); ftsent != NULL; ftsent = fts_read(fts)) {
-                if (strcmp(ftsent->fts_name, "modalias") == 0) {
-                        _cleanup_kmod_module_unref_list_ struct kmod_list *list = NULL;
-                        struct kmod_list *l;
+                _cleanup_kmod_module_unref_list_ struct kmod_list *list = NULL;
+                struct kmod_list *l;
 
-                        if (find_kmod_module_from_sysfs_node(ctx, ftsent->fts_parent->fts_path, ftsent->fts_parent->fts_pathlen, &list) < 0)
-                                continue;
+                if (ftsent->fts_level != 1)
+                        continue;
 
-                        kmod_list_foreach(l, list) {
-                                _cleanup_kmod_module_unref_ struct kmod_module *mod = kmod_module_get_module(l);
-                                const char *name = kmod_module_get_name(mod);
-                                Hashmap *suppliers = hashmap_get(modules_suppliers, name);
-                                if (suppliers == NULL) {
-                                        suppliers = hashmap_new(string_hash_func, string_compare_func);
-                                        hashmap_put(modules_suppliers, strdup(name), suppliers);
-                                }
+                log_error("fts->path = %s", ftsent->fts_path);
+                memcpy(consumer, ftsent->fts_path, ftsent->fts_pathlen);
+                consumer[ftsent->fts_pathlen] = '\0';
+                snprintf(consumer + ftsent->fts_pathlen, sizeof(consumer) - ftsent->fts_pathlen, "/consumer");
+                consumer_len = ftsent->fts_pathlen + sizeof("/consumer");
 
-                                find_suppliers_for_sys_node(ctx, suppliers, ftsent->fts_parent->fts_path, ftsent->fts_parent->fts_pathlen);
+                if (find_kmod_module_from_sysfs_node(ctx, consumer, consumer_len, &list) < 0)
+                        continue;
+
+                kmod_list_foreach(l, list) {
+                        _cleanup_kmod_module_unref_ struct kmod_module *mod = kmod_module_get_module(l);
+                        const char *name = kmod_module_get_name(mod);
+                        log_error("find_suppliers:   module = %s", name);
+                        Hashmap *suppliers = hashmap_get(modules_suppliers, name);
+                        if (suppliers == NULL) {
+                                suppliers = hashmap_new(string_hash_func, string_compare_func);
+                                hashmap_put(modules_suppliers, strdup(name), suppliers);
                         }
+
+                        find_suppliers_for_sys_node(ctx, suppliers, consumer, consumer_len);
                 }
         }
 }
