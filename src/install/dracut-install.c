@@ -1574,6 +1574,10 @@ static void find_suppliers_for_sys_node(struct kmod_ctx *ctx, Hashmap *suppliers
                         closedir(d);
                 }
                 strncat(node_path, "/..", 3); // Also find suppliers of parents
+                char *parent_path = realpath(node_path, NULL);
+                if (parent_path != NULL)
+                        if (hashmap_put(suppliers, parent_path, parent_path) < 0)
+                                free(parent_path);
         }
 }
 
