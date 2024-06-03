@@ -1561,7 +1561,7 @@ static void find_suppliers_for_sys_node(struct kmod_ctx *ctx, Hashmap *suppliers
                 if (d) {
                         size_t real_path_len = strlen(real_path);
                         while ((dir = readdir(d)) != NULL) {
-                                if (strstr(dir->d_name, "supplier:platform") != NULL) {
+                                if (strstr(dir->d_name, "supplier:") != NULL) {
                                         if (snprintf(real_path + real_path_len, sizeof(real_path) - real_path_len, "/%s/supplier",
                                                      dir->d_name) < sizeof(real_path) - real_path_len) {
                                                 char *real_supplier_path = realpath(real_path, NULL);
@@ -1584,7 +1584,7 @@ static void find_suppliers_for_sys_node(struct kmod_ctx *ctx, Hashmap *suppliers
 static void find_suppliers(struct kmod_ctx *ctx)
 {
         _cleanup_fts_close_ FTS *fts;
-        char *paths[] = { "/sys/devices/platform", NULL };
+        char *paths[] = { "/sys/devices", NULL };
         fts = fts_open(paths, FTS_NOSTAT | FTS_PHYSICAL, NULL);
 
         for (FTSENT *ftsent = fts_read(fts); ftsent != NULL; ftsent = fts_read(fts)) {
